@@ -1,5 +1,6 @@
 name: Dependency & Security Check
 
+# Lightweight check — full security scanning runs in security.yml
 on:
   push:
     branches: [master, main, develop]

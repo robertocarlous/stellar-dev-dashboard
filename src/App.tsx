@@ -42,6 +42,7 @@ import ThemeToggle from './components/layout/ThemeToggle'
 import OfflineBanner from './components/layout/OfflineBanner'
 import PWAInstallBanner from './components/PWAInstallBanner'
 import { useSwipeGesture } from './hooks/useSwipeGesture'
+import SecurityHeaders from './components/SecurityHeaders'
 
 interface SearchResult {
   type?: string
@@ -91,6 +92,7 @@ const TABS: Record<string, TabComponent> = {
   performance: lazyTab(() => import('./components/dashboard/PerformanceMonitor')),
   settings: lazyTab(() => import('./components/dashboard/Settings')),
   audit: lazyTab(() => import('./components/dashboard/AuditLog')),
+  security: lazyTab(() => import('./components/dashboard/SecurityDashboard')),
   anchors: lazyNamedTab(() => import('./components/anchors'), 'AnchorIntegration'),
   search: lazyTab(() => import('./components/dashboard/AdvancedSearch')),
   cacheStats: lazyTab(() => import('./components/dashboard/CacheStats')),
@@ -315,6 +317,7 @@ function DashboardLayout() {
 
   return (
     <ErrorBoundary onRetry={handleRetry} maxRetries={3}>
+      <SecurityHeaders />
       <OfflineBanner />
       <PWAInstallBanner />
       <div

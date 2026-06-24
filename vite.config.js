@@ -2,6 +2,16 @@ import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 import { visualizer } from 'rollup-plugin-visualizer'
 
+const devSecurityHeaders = {
+  'Content-Security-Policy':
+    "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; connect-src 'self' https://*.stellar.org https://api.coingecko.com ws://localhost:*; img-src 'self' data: https:; font-src 'self' data:; object-src 'none'; base-uri 'self'; frame-ancestors 'none'; form-action 'self';",
+  'X-Frame-Options': 'SAMEORIGIN',
+  'X-Content-Type-Options': 'nosniff',
+  'Referrer-Policy': 'strict-origin-when-cross-origin',
+  'Permissions-Policy': 'camera=(), microphone=(), geolocation=(), payment=()',
+  'X-XSS-Protection': '1; mode=block',
+}
+
 // https://vitejs.dev/config/
 export default defineConfig({
   plugins: [
@@ -65,6 +75,7 @@ export default defineConfig({
   // Allow the dev server to serve sw.js at the root scope
   server: {
     headers: {
+      ...devSecurityHeaders,
       // Required for SharedArrayBuffer (not needed here) and to allow the SW
       // to intercept all requests under origin.
       'Service-Worker-Allowed': '/',

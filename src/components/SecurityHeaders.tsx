@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo } from 'react';
-import { generateCspNonce, buildCspHeader } from '../utils/security';
+import { buildSecurityHeaders, generateCspNonce } from '../lib/security/securityHeaders';
 
 export interface SecurityHeadersProps {
   nonce?: string;
@@ -7,14 +7,17 @@ export interface SecurityHeadersProps {
 
 export function SecurityHeaders({ nonce }: SecurityHeadersProps): JSX.Element {
   const resolvedNonce = useMemo(() => nonce ?? generateCspNonce(), [nonce]);
-  const cspValue = useMemo(() => buildCspHeader(resolvedNonce), [resolvedNonce]);
+  const headers = useMemo(() => buildSecurityHeaders(resolvedNonce), [resolvedNonce]);
 
   useEffect(() => {
     const metaTags = [
-      { httpEquiv: 'Content-Security-Policy', content: cspValue },
-      { httpEquiv: 'Referrer-Policy', content: 'strict-origin-when-cross-origin' },
-      { httpEquiv: 'X-Content-Type-Options', content: 'nosniff' },
-      { name: 'permissions-policy', content: 'camera=(), microphone=(), geolocation=()' },
+      { httpEquiv: 'Content-Security-Policy', content: headers.contentSecurityPolicy },
+      { httpEquiv: 'Strict-Transport-Security', content: headers.strictTransportSecurity },
+      { httpEquiv: 'Referrer-Policy', content: headers.referrerPolicy },
+      { httpEquiv: 'X-Content-Type-Options', content: headers.xContentTypeOptions },
+      { httpEquiv: 'X-Frame-Options', content: headers.xFrameOptions },
+      { httpEquiv: 'X-XSS-Protection', content: headers.xXssProtection },
+      { name: 'permissions-policy', content: headers.permissionsPolicy },
     ];
 
     const inserted = metaTags.map(({ httpEquiv, name, content }) => {
@@ -38,7 +41,7 @@ export function SecurityHeaders({ nonce }: SecurityHeadersProps): JSX.Element {
     return () => {
       inserted.forEach((el) => el && el.parentNode?.removeChild(el));
     };
-  }, [cspValue]);
+  }, [headers]);
 
   return null;
 }
