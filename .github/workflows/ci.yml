@@ -15,6 +15,10 @@ env:
   NODE_VERSION: '20'
 
 jobs:
+  # ══════════════════════════════════════════════════════════════════════════
+  # Stage 1 — Quality Gate (parallel)
+  # Lint, format, and type-check run concurrently for fast feedback.
+  # ══════════════════════════════════════════════════════════════════════════
   lint:
     name: Lint & Format Check
     runs-on: ubuntu-latest
@@ -51,6 +55,10 @@ jobs:
       - name: Type check
         run: npm run type-check
 
+  # ══════════════════════════════════════════════════════════════════════════
+  # Stage 2 — Test Gate (parallel)
+  # Unit/integration tests across Node versions; E2E and visual run in parallel.
+  # ══════════════════════════════════════════════════════════════════════════
   test:
     name: Unit & Integration Tests
     runs-on: ubuntu-latest
@@ -177,6 +185,10 @@ jobs:
           path: tests/e2e/snapshots
           key: visual-snapshots-${{ github.base_ref || github.ref_name }}
 
+  # ══════════════════════════════════════════════════════════════════════════
+  # Stage 3 — Build Gate (parallel, depends on Stage 1 + 2 core tests)
+  # Production build and bundle-size budget enforcement.
+  # ══════════════════════════════════════════════════════════════════════════
   build:
     name: Build
     runs-on: ubuntu-latest
@@ -313,3 +325,46 @@ jobs:
           name: bundle-stats
           path: dist/stats.html
           retention-days: 30
+
+  # ══════════════════════════════════════════════════════════════════════════
+  # Stage 4 — Pipeline Summary
+  # Aggregates all stage results into a single pass/fail gate.
+  # ══════════════════════════════════════════════════════════════════════════
+  ci-gate:
+    name: CI Pipeline Gate
+    runs-on: ubuntu-latest
+    needs: [lint, type-check, test, e2e, visual-regression, build, bundle-size]
+    if: always()
+    steps:
+      - name: Evaluate CI pipeline
+        run: |
+          echo "## CI Pipeline Summary" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Stage | Job | Result |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|-------|-----|--------|" >> "$GITHUB_STEP_SUMMARY"
+          echo "| 1 — Quality | Lint & Format | ${{ needs.lint.result }} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| 1 — Quality | Type Check | ${{ needs.type-check.result }} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| 2 — Test | Unit & Integration | ${{ needs.test.result }} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| 2 — Test | E2E | ${{ needs.e2e.result }} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| 2 — Test | Visual Regression | ${{ needs.visual-regression.result }} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| 3 — Build | Build | ${{ needs.build.result }} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| 3 — Build | Bundle Size | ${{ needs.bundle-size.result }} |" >> "$GITHUB_STEP_SUMMARY"
+
+          FAILED=0
+          for result in \
+            "${{ needs.lint.result }}" \
+            "${{ needs.type-check.result }}" \
+            "${{ needs.test.result }}" \
+            "${{ needs.e2e.result }}" \
+            "${{ needs.visual-regression.result }}" \
+            "${{ needs.build.result }}" \
+            "${{ needs.bundle-size.result }}"; do
+            if [ "$result" = "failure" ] || [ "$result" = "cancelled" ]; then
+              FAILED=1
+            fi
+          done
+
+          if [ "$FAILED" -eq 1 ]; then
+            echo "::error::CI pipeline gate failed — one or more jobs did not succeed."
+            exit 1
+          fi
+          echo "All CI pipeline stages passed."

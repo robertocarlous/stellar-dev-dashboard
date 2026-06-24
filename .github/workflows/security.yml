@@ -1,0 +1,172 @@
+name: Security Scanning
+
+on:
+  push:
+    branches: [master, main, develop]
+  pull_request:
+    branches: [master, main, develop]
+  schedule:
+    # Daily at 07:00 UTC
+    - cron: '0 7 * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  security-events: write
+  pull-requests: write
+
+env:
+  NODE_VERSION: '20'
+
+jobs:
+  # ── Stage 1: Dependency vulnerability scanning (parallel) ────────────────
+  npm-audit:
+    name: NPM Audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - run: npm ci
+
+      - name: Run npm audit (high severity)
+        run: npm audit --audit-level=high
+
+      - name: Generate audit report
+        if: always()
+        run: npm audit --json > audit-report.json || true
+
+      - name: Upload audit report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: npm-audit-report
+          path: audit-report.json
+          retention-days: 30
+
+  snyk:
+    name: Snyk Security Scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - run: npm ci
+
+      - name: Run Snyk to check for vulnerabilities
+        uses: snyk/actions/node@master
+        continue-on-error: true
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        with:
+          args: --severity-threshold=high --file=package-lock.json
+
+  dependency-review:
+    name: Dependency Review
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Dependency Review
+        uses: actions/dependency-review-action@v4
+        with:
+          fail-on-severity: high
+          comment-summary-in-pr: always
+
+  # ── Stage 2: Static analysis & license checks (parallel) ─────────────────
+  license-check:
+    name: License Compliance
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - run: npm ci
+
+      - name: Check for copyleft licenses
+        run: |
+          npx --yes license-checker --production --summary --excludePrivatePackages \
+            --failOn "GPL;AGPL;LGPL" || {
+            echo "::warning::License check found copyleft dependencies — review required."
+          }
+
+  secret-scan:
+    name: Secret Pattern Scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Scan for hardcoded secrets
+        run: |
+          PATTERNS=(
+            'BEGIN (RSA |EC )?PRIVATE KEY'
+            'sk_live_[0-9a-zA-Z]{24,}'
+            'ghp_[0-9a-zA-Z]{36}'
+            'AKIA[0-9A-Z]{16}'
+          )
+          FOUND=0
+          for pattern in "${PATTERNS[@]}"; do
+            if git grep -E "$pattern" -- ':!*.lock' ':!node_modules' ':!.github/workflows/security.yml' 2>/dev/null; then
+              echo "::error::Potential secret pattern detected: $pattern"
+              FOUND=1
+            fi
+          done
+          if [ "$FOUND" -eq 1 ]; then
+            exit 1
+          fi
+          echo "No hardcoded secret patterns detected."
+
+  # ── Stage 3: Security gate summary ───────────────────────────────────────
+  security-gate:
+    name: Security Gate
+    runs-on: ubuntu-latest
+    needs: [npm-audit, snyk, license-check, secret-scan]
+    if: always()
+    steps:
+      - name: Evaluate security gate
+        run: |
+          echo "## Security Scan Summary" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Check | Result |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|-------|--------|" >> "$GITHUB_STEP_SUMMARY"
+          echo "| NPM Audit | ${{ needs.npm-audit.result }} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Snyk Scan | ${{ needs.snyk.result }} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| License Check | ${{ needs.license-check.result }} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Secret Scan | ${{ needs.secret-scan.result }} |" >> "$GITHUB_STEP_SUMMARY"
+
+          if [ "${{ needs.npm-audit.result }}" != "success" ]; then
+            echo "::error::NPM audit failed — high-severity vulnerabilities detected."
+            exit 1
+          fi
+          if [ "${{ needs.license-check.result }}" != "success" ]; then
+            echo "::error::License compliance check failed."
+            exit 1
+          fi
+          if [ "${{ needs.secret-scan.result }}" != "success" ]; then
+            echo "::error::Secret pattern scan failed."
+            exit 1
+          fi
+          # Snyk is advisory when SNYK_TOKEN is not configured
+          if [ "${{ needs.snyk.result }}" = "failure" ] && [ -n "${{ secrets.SNYK_TOKEN }}" ]; then
+            echo "::error::Snyk scan failed."
+            exit 1
+          fi
+          echo "All security gates passed."

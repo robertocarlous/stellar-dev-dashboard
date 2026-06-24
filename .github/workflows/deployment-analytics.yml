@@ -1,0 +1,179 @@
+name: Deployment Analytics
+
+on:
+  workflow_run:
+    workflows: ['Deploy to Production']
+    types: [completed]
+  schedule:
+    # Weekly metrics rollup — Monday 10:00 UTC
+    - cron: '0 10 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  collect-deployment-metrics:
+    name: Collect Deployment Metrics
+    runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_run'
+    steps:
+      - name: Gather deployment run metrics
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const run = context.payload.workflow_run;
+            const { owner, repo } = context.repo;
+
+            const jobs = await github.rest.actions.listJobsForWorkflowRun({
+              owner: owner.login,
+              repo: repo,
+              run_id: run.id,
+              per_page: 100,
+            });
+
+            const jobMetrics = jobs.data.jobs.map((job) => ({
+              name: job.name,
+              status: job.conclusion,
+              started_at: job.started_at,
+              completed_at: job.completed_at,
+              duration_seconds: job.completed_at && job.started_at
+                ? Math.round((new Date(job.completed_at) - new Date(job.started_at)) / 1000)
+                : null,
+            }));
+
+            const totalDuration = jobMetrics.reduce(
+              (sum, j) => sum + (j.duration_seconds || 0),
+              0
+            );
+
+            const metrics = {
+              workflow: run.name,
+              run_id: run.id,
+              run_number: run.run_number,
+              event: run.event,
+              branch: run.head_branch,
+              commit: run.head_sha,
+              status: run.conclusion,
+              success: run.conclusion === 'success',
+              created_at: run.created_at,
+              updated_at: run.updated_at,
+              total_duration_seconds: totalDuration,
+              jobs: jobMetrics,
+              collected_at: new Date().toISOString(),
+            };
+
+            const fs = require('fs');
+            fs.writeFileSync('deployment-metrics.json', JSON.stringify(metrics, null, 2));
+
+            const successIcon = metrics.success ? '✅' : '❌';
+            const summary = [
+              `## ${successIcon} Deployment Metrics — Run #${run.run_number}`,
+              '',
+              '| Metric | Value |',
+              '|--------|-------|',
+              `| Status | ${run.conclusion} |`,
+              `| Branch | \`${run.head_branch}\` |`,
+              `| Commit | \`${run.head_sha.substring(0, 7)}\` |`,
+              `| Total Duration | ${totalDuration}s |`,
+              `| Jobs | ${jobMetrics.length} |`,
+              '',
+              '### Job Breakdown',
+              '',
+              '| Job | Status | Duration |',
+              '|-----|--------|----------|',
+              ...jobMetrics.map(
+                (j) => `| ${j.name} | ${j.status} | ${j.duration_seconds ?? '—'}s |`
+              ),
+            ].join('\n');
+
+            core.summary.addRaw(summary).write();
+
+            core.setOutput('success', metrics.success);
+            core.setOutput('duration', totalDuration);
+
+      - name: Upload deployment metrics artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: deployment-metrics-${{ github.event.workflow_run.run_number }}
+          path: deployment-metrics.json
+          retention-days: 90
+
+      - name: Record performance benchmark
+        if: github.event.workflow_run.conclusion == 'success'
+        run: |
+          echo "## Performance Tracking" >> "$GITHUB_STEP_SUMMARY"
+          echo "Deployment completed successfully. Metrics artifact retained for 90 days." >> "$GITHUB_STEP_SUMMARY"
+
+  weekly-success-rate:
+    name: Weekly Success Rate Report
+    runs-on: ubuntu-latest
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    steps:
+      - name: Calculate deployment success rate
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const since = new Date();
+            since.setDate(since.getDate() - 7);
+
+            const runs = await github.paginate(
+              github.rest.actions.listWorkflowRuns,
+              {
+                owner: owner.login,
+                repo: repo,
+                workflow_id: 'deploy.yml',
+                per_page: 100,
+                created: `>=${since.toISOString()}`,
+              }
+            );
+
+            const total = runs.length;
+            const successes = runs.filter((r) => r.conclusion === 'success').length;
+            const failures = runs.filter((r) => r.conclusion === 'failure').length;
+            const cancelled = runs.filter((r) => r.conclusion === 'cancelled').length;
+            const successRate = total > 0 ? ((successes / total) * 100).toFixed(1) : 'N/A';
+
+            const avgDuration = runs
+              .filter((r) => r.run_started_at && r.updated_at)
+              .map((r) => (new Date(r.updated_at) - new Date(r.run_started_at)) / 1000)
+              .reduce((sum, d, _, arr) => sum + d / arr.length, 0);
+
+            const report = {
+              period_days: 7,
+              total_deployments: total,
+              successes,
+              failures,
+              cancelled,
+              success_rate_percent: successRate,
+              avg_duration_seconds: Math.round(avgDuration) || 0,
+              generated_at: new Date().toISOString(),
+            };
+
+            const fs = require('fs');
+            fs.writeFileSync('weekly-report.json', JSON.stringify(report, null, 2));
+
+            core.summary
+              .addRaw([
+                '## Weekly Deployment Success Rate',
+                '',
+                '| Metric | Value |',
+                '|--------|-------|',
+                `| Period | Last 7 days |`,
+                `| Total Deployments | ${total} |`,
+                `| Successes | ${successes} |`,
+                `| Failures | ${failures} |`,
+                `| Cancelled | ${cancelled} |`,
+                `| Success Rate | **${successRate}%** |`,
+                `| Avg Duration | ${Math.round(avgDuration)}s |`,
+              ].join('\n'))
+              .write();
+
+      - name: Upload weekly report
+        uses: actions/upload-artifact@v7
+        with:
+          name: weekly-deployment-report
+          path: weekly-report.json
+          retention-days: 365
