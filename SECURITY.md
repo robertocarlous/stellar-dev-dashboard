@@ -12,6 +12,13 @@ Connected wallets are disconnected after a configurable idle period (default
 15 minutes) with a confirmation prompt first. See
 [`docs/security/wallet-idle-timeout.md`](docs/security/wallet-idle-timeout.md).
 
+## Wallet session permissions
+
+Each connected wallet session carries revocable `read`, `sign` and `submit`
+permissions. Revoked actions fail closed before reaching the wallet, and the
+choice is cleared when the session ends. See
+[`docs/security/wallet-session-permissions.md`](docs/security/wallet-session-permissions.md).
+
 ## Code owners for security-sensitive paths
 
 Wallet, authentication, cryptography, and CI paths require review from the

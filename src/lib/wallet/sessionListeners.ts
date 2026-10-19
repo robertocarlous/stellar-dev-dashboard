@@ -13,6 +13,7 @@ import {
   subscribeFreighterSession,
   normalizeFreighterNetwork,
 } from './freighter'
+import { isWalletPermissionGranted } from './sessionPermissions'
 
 let accountFetchGeneration = 0
 
@@ -32,6 +33,12 @@ async function reloadAccountForKey(publicKey: string): Promise<void> {
   const state = useStore.getState()
 
   if (!state.walletConnected || state.walletType !== 'freighter') {
+    return
+  }
+
+  // #1194: reading account/chain data requires the session-scoped "read"
+  // permission. Revoking it stops background refreshes for the session.
+  if (!isWalletPermissionGranted('read')) {
     return
   }
 

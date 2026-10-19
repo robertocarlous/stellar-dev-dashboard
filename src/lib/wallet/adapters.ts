@@ -19,6 +19,7 @@ import {
 } from './walletconnect'
 import { connectHardwareWallet } from './devices'
 import { disconnectLedger, signXdrWithLedger } from './ledger'
+import { assertWalletPermission } from './sessionPermissions'
 
 export type WalletId = 'freighter' | 'xbull' | 'albedo' | 'lobstr' | 'hana' | 'ledger' | 'walletconnect' | 'solar'
 
@@ -135,6 +136,9 @@ function createAdapter(
     getNetwork: options.getNetwork,
     async signTransaction(xdr, network) {
       if (!capabilities.transactionSigning) throw new Error(`${id} does not support transaction signing.`)
+      // #1194: signing requires the session-scoped "sign" permission. Checked
+      // before any network/XDR work so a revoked session never reaches the wallet.
+      assertWalletPermission('sign')
       validateTransactionNetwork(xdr, network)
       requireSigningNetwork(this, await options.getNetwork(), network)
       return options.signTransaction(xdr, network)
@@ -143,6 +147,8 @@ function createAdapter(
       if (!capabilities.authEntrySigning || !options.signAuthEntry) {
         throw new Error(`${id} does not support authorization-entry signing.`)
       }
+      // #1194: auth-entry signing is also a signing action.
+      assertWalletPermission('sign')
       requireSigningNetwork(this, await options.getNetwork(), network)
       return options.signAuthEntry(xdr, network)
     },

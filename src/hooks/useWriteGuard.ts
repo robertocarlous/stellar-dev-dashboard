@@ -17,6 +17,7 @@
 
 import { useState, useCallback, useRef } from 'react';
 import { useStore } from '../lib/store';
+import { type WalletPermission } from '../lib/wallet/sessionPermissions';
 
 // ── Session-level read-only lock (persisted in sessionStorage) ──────────────
 
@@ -49,6 +50,11 @@ export interface GuardOptions {
   action: string;
   /** Called when the user has confirmed and the write is allowed to proceed */
   onConfirm: () => void | Promise<void>;
+  /**
+   * Session permission this write requires (#1194). Defaults to `submit`.
+   * Reads use `useWalletPermissions`; the guard covers sign/submit writes.
+   */
+  permission?: WalletPermission;
 }
 
 export interface UseWriteGuardReturn {
@@ -64,6 +70,13 @@ export interface UseWriteGuardReturn {
   lockReadOnly: () => void;
   /** Lift the per-session mainnet read-only lock */
   unlockReadOnly: () => void;
+  /**
+   * Permission that blocked the last guard() call, if any (#1194). The last
+   * write was NOT performed; show a re-grant prompt and let the user retry.
+   */
+  permissionDenied: WalletPermission | null;
+  /** Clear the permission-denied state (e.g. after showing the prompt) */
+  dismissPermissionDenied: () => void;
   /** Whether the confirmation dialog is currently open */
   dialogOpen: boolean;
   /** Props to spread onto <MainnetConfirmDialog> */
@@ -78,11 +91,12 @@ export interface MainnetConfirmDialogProps {
 }
 
 export function useWriteGuard(): UseWriteGuardReturn {
-  const { network } = useStore();
+  const { network, walletConnected, walletSessionPermissions } = useStore();
   const isMainnet = network === 'mainnet';
 
   const [readOnlyLocked, setReadOnlyLocked] = useState<boolean>(getSessionLock);
   const [dialogOpen, setDialogOpen] = useState(false);
+  const [permissionDenied, setPermissionDenied] = useState<WalletPermission | null>(null);
   const [actionLabel, setActionLabel] = useState('');
   const pendingConfirm = useRef<(() => void | Promise<void>) | null>(null);
 
@@ -96,8 +110,20 @@ export function useWriteGuard(): UseWriteGuardReturn {
     setReadOnlyLocked(false);
   }, []);
 
+  const dismissPermissionDenied = useCallback(() => {
+    setPermissionDenied(null);
+  }, []);
+
   const guard = useCallback(
-    ({ action, onConfirm }: GuardOptions) => {
+    ({ action, onConfirm, permission = 'submit' }: GuardOptions) => {
+      // #1194: a connected wallet session that revoked a permission cannot
+      // perform the action. The onConfirm callback is never invoked.
+      if (walletConnected && !walletSessionPermissions[permission]) {
+        setPermissionDenied(permission);
+        return;
+      }
+      setPermissionDenied(null);
+
       // Read-only lock blocks all writes on mainnet regardless
       if (isMainnet && readOnlyLocked) {
         // Silently blocked — the UI should surface the lock badge.
@@ -116,7 +142,7 @@ export function useWriteGuard(): UseWriteGuardReturn {
       setActionLabel(action);
       setDialogOpen(true);
     },
-    [isMainnet, readOnlyLocked],
+    [isMainnet, readOnlyLocked, walletConnected, walletSessionPermissions],
   );
 
   const handleConfirm = useCallback(() => {
@@ -136,6 +162,8 @@ export function useWriteGuard(): UseWriteGuardReturn {
     isReadOnlyLocked: isMainnet && readOnlyLocked,
     lockReadOnly,
     unlockReadOnly,
+    permissionDenied,
+    dismissPermissionDenied,
     dialogOpen,
     dialogProps: {
       open: dialogOpen,

@@ -10,6 +10,15 @@ import { handleNetworkSwitch } from './cacheInit'
 import { normalizeLedgerSequence } from './ledgerPin'
 import { hydrateDemoState } from './demoMode'
 import { loadIdleTimeoutMinutes, saveIdleTimeoutMinutes } from './wallet/idleTimeout'
+import {
+  clearSessionPermissions,
+  loadSessionPermissions,
+  saveSessionPermissions,
+  setWalletPermissionChecker,
+  DEFAULT_SESSION_PERMISSIONS,
+  type SessionPermissions,
+  type WalletPermission,
+} from './wallet/sessionPermissions'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -108,6 +117,16 @@ export interface SessionSlice {
   currentUserRole: string
   sessionRecordingActive: boolean
   sessionRecordingId: string | null
+  /**
+   * Session-scoped read/sign/submit permissions (#1194).
+   *
+   * Deliberately NOT in PERSIST_KEYS: permissions die with the wallet
+   * session (sessionStorage + explicit reset on disconnect/revoke), never
+   * with the durable preferences store.
+   */
+  walletSessionPermissions: SessionPermissions
+  grantWalletSessionPermission: (action: WalletPermission) => void
+  revokeWalletSessionPermission: (action: WalletPermission) => void
 }
 
 export interface AccountSlice {
@@ -372,6 +391,27 @@ export const useStore = create<StoreState>((set, get) => {
     currentUserRole: 'viewer',
     sessionRecordingActive: false,
     sessionRecordingId: null,
+    walletSessionPermissions: loadSessionPermissions().permissions,
+    grantWalletSessionPermission: (action) => {
+      const current = get().walletSessionPermissions
+      if (current[action]) return
+      const next = { ...current, [action]: true }
+      saveSessionPermissions(next)
+      set((s) => ({
+        walletSessionPermissions: next,
+        session: { ...s.session, walletSessionPermissions: next },
+      }))
+    },
+    revokeWalletSessionPermission: (action) => {
+      const current = get().walletSessionPermissions
+      if (!current[action]) return
+      const next = { ...current, [action]: false }
+      saveSessionPermissions(next)
+      set((s) => ({
+        walletSessionPermissions: next,
+        session: { ...s.session, walletSessionPermissions: next },
+      }))
+    },
   }
 
   const initialAccountSlice: AccountSlice = {
@@ -732,22 +772,28 @@ export const useStore = create<StoreState>((set, get) => {
       }),
     disconnectWallet: () =>
       set(s => {
+        // End of wallet session: permissions revert to defaults and the
+        // persisted record is dropped (#1194).
+        clearSessionPermissions()
         const update = {
           walletConnected: false,
           walletType: null,
           walletPublicKey: null,
           walletSessionRevokedReason: null,
+          walletSessionPermissions: { ...DEFAULT_SESSION_PERMISSIONS },
         }
         return { ...update, session: { ...s.session, ...update } }
       }),
     revokeWalletSession: (reason = 'session_revoked') =>
       set(s => {
+        clearSessionPermissions()
         const sessionUpdate = {
           walletConnected: false,
           walletType: null,
           walletPublicKey: null,
           walletSessionRevokedReason: reason,
           connectedAddress: null,
+          walletSessionPermissions: { ...DEFAULT_SESSION_PERMISSIONS },
         }
         const accountUpdate = {
           accountData: null,
@@ -831,6 +877,12 @@ export const useStore = create<StoreState>((set, get) => {
     setCapacityPredictionHorizon: (days) => set(s => ({ capacityPredictionHorizon: days, preferences: { ...s.preferences, capacityPredictionHorizon: days } })),
   }
 })
+
+// ─── Session permission enforcement source (#1194) ───────────────────────────
+// Adapters and hooks assert read/sign/submit permissions without importing the
+// store directly (that would create a cycle). The store is the single source
+// of truth and installs the checker once here.
+setWalletPermissionChecker((action) => useStore.getState().walletSessionPermissions[action])
 
 // ─── Expose store for e2e testing ────────────────────────────────────────────
 if (typeof window !== 'undefined') {

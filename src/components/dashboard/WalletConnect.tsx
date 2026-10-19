@@ -16,6 +16,8 @@ import {
   getSessionSecurityPosture,
 } from '../../lib/wallet/security'
 import { IDLE_TIMEOUT_OPTIONS, isIdleTimeoutSupported } from '../../lib/wallet/idleTimeout'
+import { isWalletPermissionGranted } from '../../lib/wallet/sessionPermissions'
+import WalletSessionPermissions from '../settings/WalletSessionPermissions'
 import Card from './Card'
 
 interface WalletDef {
@@ -427,6 +429,16 @@ export default function WalletConnect() {
       details: `${type} connected${options.mode ? ` (${options.mode})` : ''}`,
     })
 
+    // #1194: account reads are gated by the session-scoped "read" permission.
+    if (!isWalletPermissionGranted('read')) {
+      refreshAudit({
+        action: 'account_load_skipped',
+        status: 'info',
+        details: 'Read permission revoked for this session',
+      })
+      return
+    }
+
     setAccountLoading(true)
     try {
       const account = await fetchAccount(publicKey, network)
@@ -574,6 +586,8 @@ export default function WalletConnect() {
             minutes={walletIdleTimeoutMinutes}
             onChange={setWalletIdleTimeoutMinutes}
           />
+
+          <WalletSessionPermissions />
 
           <button
             onClick={handleDisconnect}
